@@ -1,10 +1,10 @@
 package commands
 
 import (
-	"strings"
+	"fmt"
+	"strconv"
 
-	"github.com/zekroTJA/shinpuru/internal/services/guildlog"
-	"github.com/zekroTJA/shinpuru/internal/util/static"
+	"github.com/zekroTJA/shinpuru/pkg/dmdialog"
 	"github.com/zekroTJA/shireikan"
 )
 
@@ -39,38 +39,27 @@ func (c *CmdTest) IsExecutableInDMChannels() bool {
 	return true
 }
 
-func (c *CmdTest) Exec(ctx shireikan.Context) error {
-	gl := ctx.GetObject(static.DiGuildLog).(guildlog.Logger)
+func (c *CmdTest) Exec(ctx shireikan.Context) (err error) {
+	a, err := dmdialog.New(ctx.GetSession()).
+		AddQuestion(dmdialog.Question{
+			ID:   "name",
+			Text: "Whats your name?",
+		}).
+		AddQuestion(dmdialog.Question{
+			ID:   "age",
+			Text: "Whats your age?",
+			Validator: func(s string) error {
+				_, err := strconv.Atoi(s)
+				return err
+			},
+		}).
+		Send(ctx.GetMember().User.ID)
 
-	severity, err := ctx.GetArgs().Get(0).AsInt()
 	if err != nil {
-		return err
+		return
 	}
 
-	var f func(string, string, ...interface{}) error
+	fmt.Println(a.Await())
 
-	switch severity {
-	case 0:
-		f = gl.Debugf
-	case 1:
-		f = gl.Infof
-	case 2:
-		f = gl.Warnf
-	case 3:
-		f = gl.Errorf
-	case 4:
-		f = gl.Fatalf
-	}
-
-	gl = gl.Section(ctx.GetArgs().Get(1).AsString())
-
-	return f(ctx.GetGuild().ID, strings.Join(ctx.GetArgs()[2:], " "))
-
-	// db := ctx.GetObject(static.DiDatabase).(database.Database)
-	// st := ctx.GetObject(static.DiObjectStorage).(storage.Storage)
-
-	// return util.FlushAllGuildData(db, st, ctx.GetGuild().ID)
-
-	// fmt.Println(static.AdditionalPermissions)
-	// return nil
+	return
 }
