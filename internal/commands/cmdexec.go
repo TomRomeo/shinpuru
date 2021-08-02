@@ -6,14 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-	"github.com/zekrotja/dgrs"
-
-	"github.com/zekroTJA/shinpuru/internal/services/codeexec"
+	"github.com/zekroTJA/shinpuru/internal/models"
 	"github.com/zekroTJA/shinpuru/internal/services/database"
 	"github.com/zekroTJA/shinpuru/internal/util"
 	"github.com/zekroTJA/shinpuru/internal/util/static"
-	"github.com/zekroTJA/shinpuru/pkg/jdoodle"
+	"github.com/zekroTJA/shinpuru/pkg/dmdialog"
 	"github.com/zekroTJA/shireikan"
 )
 
@@ -36,7 +33,8 @@ func (c *CmdExec) GetDescription() string {
 func (c *CmdExec) GetHelp() string {
 	return "`exec setup` - enter jdoodle setup\n" +
 		"`exec reset` - disable and delete token from database\n" +
-		"`exec check` - retrurns the number of tokens consumed this day\n"
+		"`exec toggle` - toggle the enabled state of the code execution\n" +
+		"`exec` - display the current code exec status"
 }
 
 func (c *CmdExec) GetGroup() string {
@@ -62,160 +60,229 @@ func (c *CmdExec) IsExecutableInDMChannels() bool {
 }
 
 func (c *CmdExec) Exec(ctx shireikan.Context) error {
-	execFact := ctx.GetObject(static.DiCodeExecFactory).(codeexec.Factory)
-	if execFact.Name() == "ranna" {
-		return util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
-			"Code execution is supplied by [ranna](https://github.com/ranna-go) in this instance, so "+
-				"nothing is required to be set up. :wink:",
-			"", 0).DeleteAfter(10 * time.Second).Error()
-	}
-
-	errHelpMsg := func(ctx shireikan.Context) error {
-		return util.SendEmbedError(ctx.GetSession(), ctx.GetChannel().ID,
-			"Invalid command arguments. Please use `help exec` to see how to use this command.").
-			DeleteAfter(8 * time.Second).Error()
-	}
-
-	if len(ctx.GetArgs()) < 1 {
-		return errHelpMsg(ctx)
-	}
 
 	switch strings.ToLower(ctx.GetArgs().Get(0).AsString()) {
-	case "setup", "enable":
+	case "toggle":
+		return c.setState(ctx)
+	case "enable", "on":
+		return c.setState(ctx, true)
+	case "disable", "off":
+		return c.setState(ctx, false)
+	case "setup":
 		return c.setup(ctx)
-	case "reset", "remove":
+	case "reset":
 		return c.reset(ctx)
-	case "check", "stats":
-		return c.check(ctx)
 	default:
-		return errHelpMsg(ctx)
+		return c.status(ctx)
 	}
-}
-
-func (c *CmdExec) setup(ctx shireikan.Context) error {
-	dmChan, err := ctx.GetSession().UserChannelCreate(ctx.GetUser().ID)
-	if err != nil {
-		return err
-	}
-
-	err = util.SendEmbed(ctx.GetSession(), dmChan.ID,
-		"We need a [jdoodle API](https://www.jdoodle.com/compiler-api) client ID and secret to enable code execution on this guild. These values will be \n"+
-			"saved as clear text in our database to pass it to the API, so please, be careful which data you want to use, also, if we secure our \n"+
-			"database as best as possible, we do not guarantee the safety of your data.\n\nPlease enter first your API **client ID** or enter `cancel` to return:", "", 0).
-		Error()
-	if err != nil {
-		if strings.Contains(err.Error(), "Cannot send messages to this user") {
-			err := util.SendEmbedError(ctx.GetSession(), ctx.GetChannel().ID,
-				"In order to setup [jsdoodle's](https://www.jdoodle.com) API, we need to get your jsdoodle API client ID and secret. "+
-					"Because of security, we don't want that you send your credentials into a guilds chat, that would be done via DM.\n"+
-					"So, please enable DM's for this guild to proceed.").
-				DeleteAfter(15 * time.Second).Error()
-			return err
-		}
-	}
-
-	var removeHandler func()
-	var state int
-	var clientId, clientSecret string
-	removeHandler = ctx.GetSession().AddHandler(func(s *discordgo.Session, e *discordgo.MessageCreate) {
-		st := ctx.GetObject(static.DiState).(*dgrs.State)
-		self, err := st.SelfUser()
-		if err != nil {
-			return
-		}
-
-		if e.ChannelID != dmChan.ID || e.Author.ID == self.ID {
-			return
-		}
-
-		if strings.ToLower(e.Content) == "cancel" {
-			util.SendEmbedError(s, dmChan.ID, "Setup canceled.")
-		} else {
-			switch state {
-			case 0:
-				clientId = e.Content
-				if len(clientId) < apiIDLen {
-					util.SendEmbedError(ctx.GetSession(), dmChan.ID,
-						"Invalid API clientID, please enter again or enter `cancel` to exit.")
-					return
-				}
-				state++
-				util.SendEmbed(ctx.GetSession(), dmChan.ID, "Okay, now, please enter your API **secret** or enter `cancel` to exit:", "", 0)
-				return
-			case 1:
-				clientSecret = e.Content
-				if len(clientSecret) < apiKeyLen {
-					util.SendEmbedError(ctx.GetSession(), dmChan.ID,
-						"Invalid API secret, please enter again or enter `cancel` to exit.")
-					return
-				}
-			}
-
-			_, err := jdoodle.NewWrapper(clientId, clientSecret).CreditsSpent()
-			if err != nil {
-				util.SendEmbedError(ctx.GetSession(), dmChan.ID,
-					"Sorry, but it seems like your entered credentials are not correct. Please try again entering your **clientID** or exit with `cancel`:")
-				state = 0
-				return
-			}
-
-			db, _ := ctx.GetObject(static.DiDatabase).(database.Database)
-			err = db.SetGuildJdoodleKey(ctx.GetGuild().ID, clientId+"#"+clientSecret)
-			if err != nil {
-				util.SendEmbedError(ctx.GetSession(), dmChan.ID,
-					"An unexpected error occured while saving the key. Please contact the host of this bot about this: ```\n"+err.Error()+"\n```")
-			}
-
-			util.SendEmbed(s, dmChan.ID, "API key set and system is enabled. :ok_hand:", "", static.ColorEmbedGreen)
-		}
-
-		if removeHandler != nil {
-			removeHandler()
-		}
-	})
 
 	return nil
 }
 
-func (c *CmdExec) reset(ctx shireikan.Context) error {
-	db, _ := ctx.GetObject(static.DiDatabase).(database.Database)
-	err := db.SetGuildJdoodleKey(ctx.GetGuild().ID, "")
-	if err != nil {
-		return err
+func (c *CmdExec) setState(ctx shireikan.Context, enable ...bool) (err error) {
+	db := ctx.GetObject(static.DiDatabase).(database.Database)
+
+	state, err := db.GetGuildExec(ctx.GetGuild().ID)
+	if err != nil && !database.IsErrDatabaseNotFound(err) {
+		return
 	}
 
-	return util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
-		"API key was deleted from database and system was disabled.", "", static.ColorEmbedYellow).
-		DeleteAfter(8 * time.Second).Error()
+	if state.Provider == "" {
+		err = util.SendEmbedError(ctx.GetSession(), ctx.GetChannel().ID,
+			"Code execution is not set up at the moment. Use `exec setup` to set up code execution before toggling it.").
+			DeleteAfter(12 * time.Second).Error()
+		return
+	}
+
+	if len(enable) == 0 {
+		state.Enabled = !state.Enabled
+	} else {
+		state.Enabled = enable[0]
+	}
+
+	if err = db.SetGuildExec(ctx.GetGuild().ID, state); err != nil {
+		return
+	}
+
+	var emb *util.EmbedMessage
+	if state.Enabled {
+		emb = util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
+			"Code execution is now enabled.", "", static.ColorEmbedGreen)
+	} else {
+		emb = util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
+			"Code execution is now disabled.", "", static.ColorEmbedOrange)
+	}
+
+	return emb.DeleteAfter(6 * time.Second).Error()
 }
 
-func (c *CmdExec) check(ctx shireikan.Context) error {
-	db, _ := ctx.GetObject(static.DiDatabase).(database.Database)
-	key, err := db.GetGuildJdoodleKey(ctx.GetGuild().ID)
-	if database.IsErrDatabaseNotFound(err) {
-		return util.SendEmbedError(ctx.GetSession(), ctx.GetChannel().ID,
-			"Code execution is not set up on this guild. Use `exec setup` to set up code execution.").
-			DeleteAfter(6 * time.Second).
-			Error()
-	}
+func (c *CmdExec) setup(ctx shireikan.Context) (err error) {
+	db := ctx.GetObject(static.DiDatabase).(database.Database)
+
+	ans, err := dmdialog.New(ctx.GetSession()).
+		AddQuestion(dmdialog.Question{
+			ID:   "service",
+			Text: "Which service do you want to use?\nAvailable: `ranna`, `jdoodle`",
+			Validator: func(s string) error {
+				s = strings.ToLower(s)
+				if s != "ranna" && s != "jdoodle" {
+					return errors.New("Invalid service.")
+				}
+				return nil
+			},
+			Formatter: strings.ToLower,
+		}).
+		Send(ctx.GetUser().ID)
 	if err != nil {
-		return err
+		return
 	}
 
-	split := strings.Split(key, "#")
-	if len(split) < 2 {
-		return errors.New("invalid jdoodle credentials")
-	}
-	clientId, clientSecret := split[0], split[1]
-
-	res, err := jdoodle.NewWrapper(clientId, clientSecret).CreditsSpent()
+	err = util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
+		"The setup is performed via DMs because secrets might be needed to be entered. Take a look into your DMs.", "", 0).
+		DeleteAfter(6 * time.Second).Error()
 	if err != nil {
-		return err
+		return
+	}
+
+	res, m := ans.Await()
+	if res != dmdialog.ResultOK {
+		return
+	}
+
+	provider := m["service"]
+	fmt.Println(provider)
+	var cfg interface{}
+
+	switch provider {
+
+	case "ranna":
+		ans, err = dmdialog.New(ctx.GetSession()).
+			AddQuestion(dmdialog.Question{
+				ID:   "endpoint",
+				Text: "Which ranna endpoint should be used?\nExample: `https://public.ranna.zekro.de`",
+				Validator: func(s string) error {
+					if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+						return errors.New("The endpoint URL must either start with `http://` or `https://`")
+					}
+					return nil
+				},
+			}).
+			AddQuestion(dmdialog.Question{
+				ID: "token",
+				Text: "Do you want to use a token for this endpoint? When yes, please enter the token now. Otherwise, enter `no`.\n" +
+					"After entering the token, you can safely delete the message containing the token due to safety measures.",
+				Formatter: func(s string) string {
+					if strings.ToLower(s) == "no" {
+						return ""
+					}
+					return s
+				},
+			}).
+			Send(ctx.GetUser().ID)
+		if err != nil {
+			return
+		}
+		res, m = ans.Await()
+		if res != dmdialog.ResultOK {
+			return
+		}
+		cfg = models.ExecConfigRanna{
+			Endpoint: m["endpoint"],
+			Token:    m["token"],
+		}
+
+	case "jdoodle":
+		ans, err = dmdialog.New(ctx.GetSession()).
+			AddQuestion(dmdialog.Question{
+				ID:   "id",
+				Text: "First of all, we need your JDoodle `client ID`. You can obtain it from here:\nhttps://www.jdoodle.com/compiler-api/",
+			}).
+			AddQuestion(dmdialog.Question{
+				ID: "secret",
+				Text: "Now, we need your `Client Secret` which can also be obtained in the page mentioned above.\n" +
+					"After entering the secret, you can safely delete the message containing the secret due to safety measures.",
+			}).
+			Send(ctx.GetUser().ID)
+		if err != nil {
+			return
+		}
+		res, m = ans.Await()
+		if res != dmdialog.ResultOK {
+			return
+		}
+		cfg = models.ExecConfigJdoodle{
+			ClientID:     m["id"],
+			ClientSecret: m["secret"],
+		}
+	}
+
+	ans, err = dmdialog.New(ctx.GetSession()).
+		AddQuestion(dmdialog.Question{
+			ID: "enable",
+			Text: "Okay, last question: Do you want to enable code execution on the guild? You can always enable/disable it using the `exec toggle` command.\n" +
+				"Type `yes` to enable code execution or anything else to leave it disabled.",
+			Formatter: strings.ToLower,
+		}).
+		SetFinishMessage("☑️ Code execution is now set up.").
+		Send(ctx.GetUser().ID)
+	if err != nil {
+		return
+	}
+	res, m = ans.Await()
+	if res != dmdialog.ResultOK {
+		return
+	}
+
+	state := &models.ExecConfig{
+		Provider: provider,
+	}
+	state.Enabled = m["enable"] == "yes"
+
+	if err = state.SerializeConfig(cfg); err != nil {
+		return
+	}
+
+	if err = db.SetGuildExec(ctx.GetGuild().ID, state); err != nil {
+		return
 	}
 
 	return util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
-		fmt.Sprintf("Today, you've spent **%d** tokens on this guild.", res.Used),
-		"JDoodle API Token Statistics", 0).
-		DeleteAfter(15 * time.Second).
-		Error()
+		"Successfully configured code execution.", "", 0).DeleteAfter(6 * time.Second).Error()
+}
+
+func (c *CmdExec) reset(ctx shireikan.Context) (err error) {
+	db := ctx.GetObject(static.DiDatabase).(database.Database)
+
+	if err = db.SetGuildExec(ctx.GetGuild().ID, &models.ExecConfig{}); err != nil {
+		return
+	}
+
+	return util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
+		"Successfully reset code execution configuration and removed all entered secrets.", "", 0).
+		DeleteAfter(6 * time.Second).Error()
+}
+
+func (c *CmdExec) status(ctx shireikan.Context) (err error) {
+	db := ctx.GetObject(static.DiDatabase).(database.Database)
+
+	state, err := db.GetGuildExec(ctx.GetGuild().ID)
+	if err != nil && !database.IsErrDatabaseNotFound(err) {
+		return
+	}
+
+	if state.Provider == "" {
+		return util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
+			"Code execution is currently not set up on this guild.\n"+
+				"Use `exec setup` to set up code execution.", "", 0).
+			DeleteAfter(10 * time.Second).Error()
+	}
+
+	msg := fmt.Sprintf("Enabled: `%t`\nProvider: `%s`", state.Enabled, state.Provider)
+	clr := static.ColorEmbedOrange
+	if state.Enabled {
+		clr = static.ColorEmbedGreen
+	}
+
+	return util.SendEmbed(ctx.GetSession(), ctx.GetChannel().ID,
+		msg, "", clr).DeleteAfter(10 * time.Second).Error()
 }

@@ -290,6 +290,15 @@ func (m *MysqlMiddleware) setup() {
 		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
 	mErr.Append(err)
 
+	_, err = m.Db.Exec("CREATE TABLE IF NOT EXISTS `execConfig` (" +
+		"`guildID` varchar(25) NOT NULL DEFAULT ''," +
+		"`enabled` int(1) NOT NULL DEFAULT '0'," +
+		"`provider` varchar(20) NOT NULL DEFAULT ''," +
+		"`config` text NOT NULL DEFAULT ''," +
+		"PRIMARY KEY (`guildID`)" +
+		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
+	mErr.Append(err)
+
 	if mErr.Len() > 0 {
 		logrus.WithError(mErr).Fatal("Failed database setup")
 	}
@@ -1837,6 +1846,34 @@ func (m *MysqlMiddleware) FlushGuildData(guildID string) (err error) {
 	}
 
 	return tx.Commit()
+}
+
+func (m *MysqlMiddleware) GetGuildExec(guildID string) (c *models.ExecConfig, err error) {
+	c = new(models.ExecConfig)
+	err = m.Db.QueryRow("SELECT enabled, provider, config FROM execConfig WHERE guildID = ?", guildID).Scan(
+		&c.Enabled, &c.Provider, &c.Config)
+	err = wrapNotFoundError(err)
+	return
+}
+
+func (m *MysqlMiddleware) SetGuildExec(guildID string, config *models.ExecConfig) (err error) {
+	var ok bool
+	m.Db.QueryRow("SELECT 1 FROM execConfig WHERE guildID = ?", guildID).Scan(&ok)
+
+	if ok {
+		_, err = m.Db.Exec(
+			"UPDATE execConfig SET "+
+				"enabled = ?, provider = ?, config = ? "+
+				"WHERE guildID = ?",
+			config.Enabled, config.Provider, config.Config, guildID)
+	} else {
+		_, err = m.Db.Exec(
+			"INSERT INTO execConfig "+
+				"(guildID, enabled, provider, config) "+
+				"VALUES (?, ?, ?, ?)",
+			guildID, config.Enabled, config.Provider, config.Config)
+	}
+	return
 }
 
 /////////// HELPER ///////////////

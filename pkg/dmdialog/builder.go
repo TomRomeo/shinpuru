@@ -19,16 +19,21 @@ const (
 
 type InputValidator func(string) error
 
+type InputFormatter func(string) string
+
 type Question struct {
 	ID        string
 	Text      string
 	Validator InputValidator
+	Formatter InputFormatter
 }
 
 type Builder struct {
-	session         *discordgo.Session
-	timeout         time.Duration
-	questions       []*Question
+	session       *discordgo.Session
+	timeout       time.Duration
+	questions     []*Question
+	finishMessage string
+
 	chanID          string
 	cursor          int
 	currentQuestion *Question
@@ -56,7 +61,17 @@ func (b *Builder) AddQuestion(q Question) *Builder {
 			return nil
 		}
 	}
+	if q.Formatter == nil {
+		q.Formatter = func(s string) string {
+			return s
+		}
+	}
 	b.questions = append(b.questions, &q)
+	return b
+}
+
+func (b *Builder) SetFinishMessage(msg string) *Builder {
+	b.finishMessage = msg
 	return b
 }
 
@@ -109,10 +124,15 @@ func (b *Builder) Send(userID string) (a *Awaiter, err error) {
 			return
 		}
 
-		a.answers[b.currentQuestion.ID] = e.Content
+		val := b.currentQuestion.Formatter(e.Content)
+
+		a.answers[b.currentQuestion.ID] = val
 
 		if ok, err := b.sendNextQuestion(); !ok && err == nil {
 			a.setResult(ResultOK)
+			if b.finishMessage != "" {
+				b.session.ChannelMessageSend(b.chanID, b.finishMessage)
+			}
 		}
 	})
 

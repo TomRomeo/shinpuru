@@ -82,6 +82,9 @@ type Database interface {
 	GetGuildLogDisable(guildID string) (bool, error)
 	SetGuildLogDisable(guildID string, enabled bool) error
 
+	GetGuildExec(guildID string) (*models.ExecConfig, error)
+	SetGuildExec(guildID string, config *models.ExecConfig) error
+
 	//////////////////////////////////////////////////////
 	//// USER SETTINGS
 
